@@ -2,8 +2,12 @@ from transformers.generation.utils import GenerateDecoderOnlyOutput
 from transformers.tokenization_utils_base import BatchEncoding
 from transformers import AutoTokenizer
 from torch import Tensor
-from typing import Dict, List, Tuple, Callable, Optional, Any
+
 import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+from typing import Dict, List, Tuple, Callable, Optional, Any
 from enum import Enum
 
 
@@ -28,7 +32,7 @@ def get_output_length(output: GenerateDecoderOnlyOutput) -> int:
         return len(output[0])
     return len(output['sequences'].squeeze())
 
-class ForwardPassProfileContext(Enum):
+class ProfileContext(Enum):
     HIDDEN = 1
     MODIFIED = 2
     CONSECUTIVE = 3
@@ -42,11 +46,13 @@ class ForwardPassProfile:
     [self.input_token] -> [list of tensors, or other information] -> [self.output_token]
     """
 
-    def __init__(self, input_token: int, output_token: int):
+    def __init__(self, input_token: int,
+                       output_token: int,
+                       context: ProfileContext = ProfileContext.HIDDEN):
         self.input_token = input_token
         self.output_token = output_token
         self.hidden_states : List[Tensor | Any] = []
-        self.context : ForwardPassProfileContext = 1
+        self.context : ProfileContext = ProfileContext.HIDDEN
     
     def add(self, hidden_state: Tensor) -> None:
         self.hidden_states.append(hidden_state)
@@ -58,16 +64,17 @@ class ForwardPassProfile:
         
         match query_mode:
             case QueryMode.SINGLE:
-                
+                new_profile.context = ProfileContext.MODIFIED
                 for i in range(len(self.hidden_states)):
                     new_profile.add(funct(self.hidden_states[i]))
             
             case QueryMode.CONSECUTIVE:
+                new_profile.context = ProfileContext.CONSECUTIVE
                 for i in range(len(self.hidden_states)-1):
                     new_profile.add(funct(self.hidden_states[i], self.hidden_states[i+1]))
             
             case QueryMode.PAIRWISE:
-                
+                new_profile.context = ProfileContext.PAIRWISE
                 n = len(self.hidden_states)
                 new_profile.hidden_states = [[None]*n for _ in range(n)]
                 for i in range(n):
@@ -75,6 +82,7 @@ class ForwardPassProfile:
                         new_profile.hidden_states[i][j] = funct(self.hidden_states[i], self.hidden_states[j])
             
             case QueryMode.CUSTOM:
+                new_profile.context = ProfileContext.PAIRWISE
                 pass # TODO: SOME IMPLEMENTATION
         
         return new_profile
@@ -84,20 +92,30 @@ class ForwardPassProfile:
         if tokenizer:
             i, o = f"\"{tokenizer.decode(i)}\"", f"\"{tokenizer.decode(o)}\""
         print(f"{i} ----> {o}")
-        end = True
-        for state in self.hidden_states:
-            if isinstance(state, List):
-                end = False
-                for s in state:
-                    print(s)
+
+        match self.context:
+            case ProfileContext.HIDDEN | ProfileContext.MODIFIED | ProfileContext.CONSECUTIVE:
+                for i, state in enumerate(self.hidden_states):
+                    print(f"{i}:", state)
                 print()
-            else:
-                print(state)
-        if end:
-            print()
+            case ProfileContext.PAIRWISE:
+                for i, state in enumerate(self.hidden_states):
+                    for j, s in enumerate(state):
+                        print(f"{i}, {j}:", s)
+                    print()
     
     def plot(self, tokenizer:Optional[AutoTokenizer] = None):
-        pass # TODO: IMPLEMENT PLOT.
+        i, o = self.input_token, self.output_token
+        if tokenizer:
+            i, o = f"\"{tokenizer.decode(i)}\"", f"\"{tokenizer.decode(o)}\""
+        
+        matrix = np.array([[float(x) if x is not None else np.nan for x in row] for row in self.hidden_states])
+        cmap = sns.color_palette("RdYlGn", as_cmap=True)
+        plt.figure(figsize=(6, 6))
+        sns.heatmap(matrix, cmap=cmap, annot=True, linewidths=0.5, linecolor='gray',
+                    cbar=True, square=True, mask=np.isnan(matrix), fmt=".2f")
+        plt.title(f"{i} ----> {o}")
+        plt.show()
 
 class GenerationProfile:
     """
@@ -136,17 +154,15 @@ class GenerationProfile:
 
     def print(self, forward_passes:Optional[List[ForwardPassProfile]] = None,
                     enable_string: bool = True) -> None:
-        
         if not forward_passes:
             forward_passes = self.forward_passes
-        
         for fp in forward_passes:
             fp.print(None if not enable_string else self.tokenizer)
         
     def plot(self, forward_passes:Optional[List[ForwardPassProfile]] = None,
                     enable_string: bool = True) -> None:
-            pass # TODO: IMPLEMENT PLOT.
-
+            for fp in forward_passes:
+                fp.plot(None if not enable_string else self.tokenizer)
     
     def print_summary(self):
         print("Input length:", self.input_length)
@@ -168,4 +184,4 @@ class GenerationProfile:
                 self.print(res)
             
             case OutputMode.PLOT:
-                pass
+                self.plot(res)
