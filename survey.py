@@ -1,8 +1,8 @@
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 
-from utils import GenerationProfile
-from functions import cosine_similarity, norm
+from utils import GenerationProfile, QueryMode as QM, OutputMode as OM
+from functions import cosine_similarity, norm, degree_angle, rad_angle
 
 models = [
     "meta-llama/Llama-3.2-1B",
@@ -31,5 +31,4 @@ output = model.generate(
 generation_profile = GenerationProfile(inputs, output, tokenizer)
 generation_profile.print_summary()
 
-generation_profile.query_pairwise(cosine_similarity)
-generation_profile.query_single(norm)
+generation_profile.query(degree_angle, QM.PAIRWISE)
